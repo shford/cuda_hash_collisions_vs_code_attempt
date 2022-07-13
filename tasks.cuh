@@ -14,7 +14,8 @@
 //#include <curand_philox4x32_x.h>
 #include "cuda_consts.cuh"
 #include "subroutines.cuh"
-#include "WjCryptLib_Md5.cuh"
+#include "WjCryptLib_Md5_host.cuh"
+
 
 void task1();
 
