@@ -1,5 +1,5 @@
 /*
- * Constants for the RTX 3060-Ti obtained from Device Query (sample program)
+ * Instructions: Fill in your Compute Capibility (w/out the decimal), DeviceQuery Information, and Required User Inputs
  */
 #pragma once
 
@@ -10,10 +10,24 @@
 
 
 #define COMPUTE_CAPABILITY 86
+
 //===========================================================================================================
 // CUDA CAPABILITY VERSION CONSTANTS
 //===========================================================================================================
-#if (COMPUTE_CAPABILITY == 86)
+#if (COMPUTE_CAPABILITY == 35)
+    // data in Table 15 CUDA Programming Manual https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html
+#elif (COMPUTE_CAPABILITY == 37)
+#elif (COMPUTE_CAPABILITY == 50)
+#elif (COMPUTE_CAPABILITY == 52)
+#elif (COMPUTE_CAPABILITY == 53)
+#elif (COMPUTE_CAPABILITY == 60)
+#elif (COMPUTE_CAPABILITY == 61)
+#elif (COMPUTE_CAPABILITY == 62)
+#elif (COMPUTE_CAPABILITY == 70)
+#elif (COMPUTE_CAPABILITY == 72)
+#elif (COMPUTE_CAPABILITY == 75)
+#elif (COMPUTE_CAPABILITY == 80)
+#elif (COMPUTE_CAPABILITY == 86)
     #define MAX_RESIDENT_GRIDS_PER_DEVICE 128
     #define MAX_DIMENSIONALITY_OF_GRID_OF_THREADBLOCKS 3
     #define MAX_X_DIM_OF_A_GRID_OF_THREADBLOCKS 2147483647 // -eq 2**31-1
@@ -60,8 +74,8 @@
     #define MAXIMUM_NUMBER_OF_LAYERS_FOR_A_CUBEMAP_LAYERED_TEXTURE_REFERENCE 2046
     #define MAXIMUM_NUMBER_OF_TEXTURES_THAT_CAN_BE_BOUND_TO_A_KERNEL 256
     #define MAXIMUM_WIDTH_FOR_A_1D_SURFACE_REFERENCE_BOUND_TO_A_CUDA_ARRAY 32768
-    #define MAXIMUM_WIDTH_AND_NUMBER_OF_LAYERS_FOR_A_1D_LAYERED_SURFACE_REFERENCE 32768
-    #define MAXIMUM_WIDTH_AND_NUMBER_OF_LAYERS_FOR_A_1D_LAYERED_SURFACE_REFERENCE 2048
+    #define MAXIMUM_WIDTH_FOR_A_1D_LAYERED_SURFACE_REFERENCE 32768
+    #define MAXIMUM_NUMBER_OF_LAYERS_FOR_A_1D_LAYERED_SURFACE_REFERENCE 2048
     #define MAXIMUM_WIDTH_FOR_A_2D_SURFACE_REFERENCE_BOUND_TO_A_CUDA_ARRAY 131072
     #define MAXIMUM_HEIGHT_FOR_A_2D_SURFACE_REFERENCE_BOUND_TO_A_CUDA_ARRAY 65536
     #define MAXIMUM_WIDTH_FOR_A_2D_LAYERED_SURFACE_REFERENCE 32768
@@ -76,7 +90,8 @@
     #define MAXIMUM_HEIGHT_FOR_A_CUBEMAP_LAYERED_SURFACE_REFERENCE 32768
     #define MAXIMUM_NUMBER_OF_LAYERS_FOR_A_CUBEMAP_LAYERED_SURFACE_REFERENCE 2046
     #define MAXIMUM_NUMBER_OF_SURFACES_THAT_CAN_BE_BOUND_TO_A_KERNEL 32
-#endif // (CUDA_COMPUTE_CAPABILITY == 86)
+#elif (COMPUTE_CAPABILITY == 87)
+#endif
 
 //===========================================================================================================
 // DEVICE CONSTANTS (copied or derived from DeviceQuery.exe)
@@ -86,7 +101,6 @@
 #define MULTIPROCESSORS 38
 #define CUDA_CORES_PER_MULTIPROCESSOR 128
 #define MAX_MEM_PER_ACTIVE_THREAD (GLOBAL_MEMORY_MB*1024*1024 / CUDA_CORES)
-#define WARP_SIZE 32
 #define WARPS_PER_MULTIPROCESSOR (CUDA_CORES_PER_MULTIPROCESSOR / WARP_SIZE)
 #define MEMORY_BUS_WIDTH 256
 #define L2_CACHE_SIZE 3145728
@@ -107,43 +121,58 @@
 #define MAX_Y_Z_DIMENSION_SIZE_OF_A_GRID_SIZE 65535
 
 //===========================================================================================================
-// USER DEFINED INPUTS - MODIFY FREELY
+// PROGRAM CONSTRAINTS and CONSTANT - DO NOT CHANGE
 //===========================================================================================================
-#define TARGET_COLLISIONS (1)
-#define ENCODING_SIZE (256)
-#define ARBITRARY_MAX_BUFF_SIZE (20000)     // MUST BE MULTIPLE OF 8 expected 4000, getting 10000... not sure why
-#define BLOCKS_PER_KERNEL (MULTIPROCESSORS) // Default: HW Limit of 1 Active Block / 1 MP
-#define THREADS_PER_BLOCK (CUDA_CORES_PER_MULTIPROCESSOR) // Default: HW Limit of 1 Active Thread / 1 Core
+#define RANDOM_GENERATOR_RETURN_LENGTH 32
+#define FALSE 0
+#define TRUE 1
+#define UNLOCKED 0
+#define LOCKED 1
+
+//===========================================================================================================
+// REQUIRED USER DEFINED INPUTS - MODIFY FREELY
+//===========================================================================================================
+#define TARGET_COLLISIONS 1                               // must be -leq num threads per kernel
+#define NUM_ENCODING_BITS 8                               // options are 8, 16, 32 bits (rand gen limitation)
+#define INITIAL_COLLISION_BUFF_SIZE 20000                 // must be % 8 - recommend min of 15000
+#define BLOCKS_PER_KERNEL MULTIPROCESSORS                 // must be -leq Compute limit - recommend eq MP
+#define THREADS_PER_BLOCK CUDA_CORES_PER_MULTIPROCESSOR   // must be -leq Compute limit - recommend eq Cores/MP
+#define NUM_RANDOMS 48                                    // tweak for efficiency - recommend ~50
 
 //===========================================================================================================
 // USER DEFINED DERIVED INPUTS
 //===========================================================================================================
 #define THREADS_PER_KERNEL (BLOCKS_PER_KERNEL * THREADS_PER_BLOCK)
 
-//===========================================================================================================
-// PROGRAM CONSTRAINTS - DO NOT CHANGE (based off program limitations such as memory indexing)
-//===========================================================================================================
-#define NUM_8BIT_RANDS (48)
-#define NUM_32BIT_RANDS (NUM_8BIT_RANDS / 4)
+#if (NUM_ENCODING_BITS == 8)
+    #define RAND_TYPE (uint8_t)
+#elif (NUM_ENCODING_BITS == 16)
+    #define RAND_TYPE (uint16_t)
+#elif (NUM_ENCODING_BITS == 32)
+    #define RAND_TYPE (uint32_t)
+#endif
 
-#define FALSE (0)
-#define TRUE (1)
-#define UNLOCKED (0)
-#define LOCKED (1)
+#define FUNCTION_CALLS_NEEDED (NUM_RANDOMS / (RANDOM_GENERATOR_RETURN_LENGTH / (NUM_ENCODING_BITS))
 
 //===========================================================================================================
 // USER INPUT SANITY CHECKS - DO NOT CHANGE (type literals correspond to program or hardware limitations)
 //===========================================================================================================
-#define THREADS_PER_KERNEL_leq_
+// execution configuration sanity checks
+#define BLOCKS_PER_KERNEL_leq_MAX_RESIDENT_BLOCKS_PER_KERNEL ((BLOCKS_PER_KERNEL < (MULTIPROCESSORS * MAX_RESIDENT_BLOCKS_PER_SM)) ? TRUE : FALSE)
+#define THREADS_PER_BLOCK_divisible_by_32 ((THREADS_PER_BLOCK % 32 == 0) ? TRUE : FALSE)
+#define THREADS_PER_KERNEL_leq_MAX_RESIDENT_THREADS_PER_KERNEL ((THREADS_PER_KERNEL <= (MULTIPROCESSORS * MAX_RESIDENT_THREADS_PER_SM)) ? TRUE : FALSE)
 
-#define TARGET_COLLISION_leq_THREADS_PER_KERNEL ((TARGET_COLLISION <= THREADS_PER_KERNEL))
+// target collision sanity check (max 1 collision / thread / kernel to prevent infinite loop in host)
+#define TARGET_COLLISIONS_leg_THREADS_PER_KERNEL ((TARGET_COLLISIONS < THREADS_PER_KERNEL) ? TRUE : FALSE)
 
+// statically allocated buff size sanity checks (note: blindly assumes host has enough memory)
+#define BUFF_SIZE_leq_MAX_LOCALMEM_PER_THREAD ((INITIAL_COLLISION_BUFF_SIZE <= MAX_LOCALMEM_PER_THREAD) ? TRUE : FALSE)
+#define BUFF_SIZE_divisible_by_8 ((INITIAL_COLLISION_BUFF_SIZE % 8 == 0) ? TRUE : FALSE)
 
-#define IS_LESSOREQ_MAX_SIZE_for_MPs_PER_KERNEL ((MPs_PER_KERNEL <= MULTIPROCESSORS) ? TRUE : FALSE)
-#define IS_MULT_OF_32_KERNEL_THREADBLOCK (() ? TRUE : FALSE)
-#define IS_MULT_OF_8_ARBITRARY_MAX_BUFF_SIZE ((ARBITRARY_MAX_BUFF_SIZE % 8) ? TRUE : FALSE)
+// ensure number of encoding bits -eq 8, 16, or 32
+#define NUM_ENCODING_BITS_not_8_16_or_32 ((NUM_ENCODING_BITS == 8 || NUM_ENCODING_BITS == 16 || NUM_ENCODING_BITS == 32) ? TRUE : FALSE)
 
-
+#define VALID_USER_INPUTS (((BLOCKS_PER_KERNEL_leq_MAX_RESIDENT_BLOCKS_PER_KERNEL && THREADS_PER_BLOCK_divisible_by_32 && THREADS_PER_KERNEL_leq_MAX_RESIDENT_THREADS_PER_KERNEL && TARGET_COLLISIONS_leg_THREADS_PER_KERNEL && BUFF_SIZE_leq_MAX_LOCALMEM_PER_THREAD && BUFF_SIZE_divisible_by_8 && NUM_ENCODING_BITS_not_8_16_or_32)) ? TRUE : FALSE)
 
 //===========================================================================================================
 // CUDA ERROR CATCHING MACRO
