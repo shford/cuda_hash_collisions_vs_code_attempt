@@ -44,6 +44,8 @@
 #define ENCODING_SIZE (256)
 #define FALSE (0)
 #define TRUE (1)
+#define UNLOCKED (0)
+#define LOCKED (1)
 
 //===========================================================================================================
 // CUDA ERROR CATCHING MACRO

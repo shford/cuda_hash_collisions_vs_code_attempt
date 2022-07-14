@@ -290,7 +290,7 @@ __device__ void Md5Calculate_dev(void  const* Buffer, uint32_t BufferSize, MD5_H
 // statically initialized global variables
 __device__ uint8_t d_num_collisions_found = 0;          // track number of collisions found by active kernel
 __device__ unsigned long long d_collision_attempts = 0; // track total number of attempts per collision
-__device__ int d_global_mutex = FALSE;                  // signal mutex to other threads (globally)
+__device__ int d_global_mutex = UNLOCKED;               // signal mutex to other threads (globally)
 __device__ int d_collision_flag = FALSE;                // signal host to read
 
 // dynamically initialized in host
@@ -333,25 +333,19 @@ __global__ void find_collisions(char* collision) {
         // generate a new batch of random numbers as needed
         if (random_index == NUM_8BIT_RANDS) {
             random_index = 0;
-            for (int i = 0; i < NUM_32BIT_RANDS; ++i) {
+            for (int i = 0; i < NUM_32BIT_RANDS; ++i)
+            {
                 int id = threadIdx.x + blockIdx.x * blockDim.x;
                 curandStatePhilox4_32_10_t state;
                 curand_init(i, id, 0, &state);
-                // assign 4 bytes at a time
-                //randoms[i*4] = (uint32_t)curand(&state);
-                //*(randoms + i * 4) = curand(&state);
-                uint32_t rand = curand(&state);
-                randoms[i * 4 + 0] = (uint8_t)rand << 8;
-                randoms[i * 4 + 1] = (uint8_t)rand << 8;
-                randoms[i * 4 + 2] = (uint8_t)rand << 8;
-                randoms[i * 4 + 3] = (uint8_t)rand << 8;
-
+                // effectively assigns 4 random uint8_t's per execution
+                *((uint32_t*)(randoms + i*4)) = curand(&state);
             }
         }
-        ++random_index;
 
+        /*
         // resize local_collision
-        /*if (local_collision_size == ARBITRARY_MAX_BUFF_SIZE) {
+        if (local_collision_size == ARBITRARY_MAX_BUFF_SIZE) {
             // retain ptr to old buffer
             char* old_buff = local_collision;
 
@@ -373,13 +367,15 @@ __global__ void find_collisions(char* collision) {
         uint8_t character = randoms[random_index];
         local_collision[local_collision_size - 1] = character ? character : 1; // no premature null terminators
         local_collision[local_collision_size] = '\0';
+        ++random_index;
         ++local_collision_size;
 
         // generate new hash
         Md5Calculate_dev((const void*)local_collision, local_collision_size, &local_md5_digest);
 
-        // terminate all threads if first 20 bits of digest match
-        if ( ((uint32_t)*d_const_md5_digest.bytes >> 12) == ((uint32_t)*local_md5_digest.bytes >> 12))
+        // terminate all threads if first 20 bits of digest match            
+        // MAY EXIT LOCK STEP - possible deadlock if mishandled
+        if ((*((uint32_t*)&d_const_md5_digest) >> 12 == *((uint32_t*)&local_md5_digest) >> 12))
         {
             /* todo:
              *  unlikely but possible device wide deadlock if within the same warp
@@ -389,34 +385,24 @@ __global__ void find_collisions(char* collision) {
              *  1) May want to utilize capability: " Run time limit on kernels:                     Yes"
              *  2) May want to init 1 __shared var / block w/ thread id of whose turn is next
              */
-            while (d_global_mutex == TRUE)
-            {
-                // idle
-            }
-            d_global_mutex = TRUE;
-            // wait for resources to be released
-            //while (d_collision_flag) {
-                // idle
-            //}
-
-            // set synchronization barrier/mutex on d_collision_flag, d_collision_size, collision
-
-
-            // for host polling: write local_data, local_data_size & increment d_collisions_found
+            
+            // set mutex lock -- see https://people.maths.ox.ac.uk/gilesm/cuda/lecs/lec3-2x2.pdf p21
+            do {} while (atomicCAS(&d_global_mutex, UNLOCKED, LOCKED));
+            
+            //enter critical section - writing for host polls and signalling when ready
             for (int byte_index = 0; byte_index <= local_collision_size; ++byte_index) {
                 collision[byte_index] = local_collision[byte_index];
             }
             d_collision_size = local_collision_size;
             ++d_num_collisions_found;
 
-            // tell host to read collision
             d_collision_flag = TRUE;
 
-            while (d_collision_flag) {
-                // idle while host reads
-            }
-            // release mutex
-            d_global_mutex = FALSE;
+            // wait for writes to finished - DO NOT REMOVE
+            __threadfence();
+
+            // free lock
+            d_global_mutex = UNLOCKED;
         }
         // increment hash attempts
         ++d_collision_attempts;
@@ -487,8 +473,8 @@ void task1() {
     while (h_collision_index < TARGET_COLLISIONS)
     {
         // execution configuration (sync device)
-        //find_collisions<<<1, 1>>>(d_collision);
-        find_collisions<<<MULTIPROCESSORS-1, CUDA_CORES_PER_MULTIPROCESSOR>>>(d_collision);
+        find_collisions<<<1, 1>>>(d_collision);
+        //find_collisions<<<MULTIPROCESSORS-1, CUDA_CORES_PER_MULTIPROCESSOR>>>(d_collision);
 
         // poll collision flag
         while (!h_collision_flag)
@@ -500,8 +486,9 @@ void task1() {
         gpuErrchk(cudaMemcpyFromSymbol(&h_collision_sizes[h_collision_index], d_collision_size, sizeof(h_sampleFile_buff_size), 0, cudaMemcpyDeviceToHost));
         gpuErrchk(cudaMemcpy(h_collisions[h_collision_index], d_collision, h_collision_sizes[h_collision_index], cudaMemcpyDeviceToHost) );
 
-        // reset flag to release kernel
+        // reset flags to release mutex and reset kernel
         h_collision_flag = FALSE;
+        cudaMemcpyToSymbol(d_global_mutex, &h_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyHostToDevice);
         cudaMemcpyToSymbol(d_collision_flag, &h_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyHostToDevice);
 
         // increment collision index
@@ -520,7 +507,7 @@ void task1() {
     cudaFree(d_collision);
     free(h_sampleFile_buff);
 
-    printf("\nCalculated %d collisions in %d attempts... Success!/\n", TARGET_COLLISIONS, h_collision_attempts);
+    printf("\nCalculated %d collisions in %lld attempts... Success!/\n", TARGET_COLLISIONS, h_collision_attempts);
 
     //===========================================================================================================
     // WRITE COLLISIONS TO DISK
