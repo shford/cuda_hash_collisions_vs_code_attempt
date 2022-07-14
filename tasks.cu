@@ -299,21 +299,27 @@ __device__ unsigned long long d_collision_size;             // track # of charac
 
 __global__ void find_collisions(volatile char* collision) {
     //===========================================================================================================
-    // DECLARATIONS & INITIALIZATION
+    // DECLARATIONS & INITIALIZATION todo finish warp
     //===========================================================================================================
+
+    // get thread id
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
 
     // create warp synchronization semaphore
     __shared__ int sync_warp_flag;
+    __shared__ int designatedThreadId;
 
-    // force each thread to get its "warp id"
+    // assign each thread thread a "warp group id"
     __shared__ int warp_group[CUDA_CORES_PER_MULTIPROCESSOR];
-
-    for (int tid = 0; tid < CUDA_CORES_PER_MULTIPROCESSOR; ++tid) {
-        
+    for (int warp_gid = 1; warp_gid <= CUDA_CORES_PER_MULTIPROCESSOR / WARP_SIZE; ++warp_gid) {
+        if (tid < warp_gid*WARP_SIZE) {
+            warp_group[tid] = warp_gid;
+            break;
+        }
     }
 
     // allocate local buffer and keep track of size in case of resizing
-    char local_collision[ARBITRARY_MAX_BUFF_SIZE];
+    char local_collision[INITIAL_COLLISION_BUFF_SIZE];
     //unsigned long long local_buff_size = ARBITRARY_MAX_BUFF_SIZE;
     //cudaError_t ret = cudaMalloc((void**)&local_collision, local_buff_size);
     //if (ret != cudaSuccess) {
@@ -331,8 +337,8 @@ __global__ void find_collisions(volatile char* collision) {
     MD5_HASH_dev local_md5_digest;
 
     // allocate storage for random character
-    unsigned long long random_index = NUM_8BIT_RANDS;
-    uint8_t randoms[NUM_8BIT_RANDS];
+    unsigned long long random_index = NUM_RANDOMS;
+    RAND_TYPE randoms[NUM_RANDOMS];
 
     //===========================================================================================================
     // COMPUTATIONS - GENERATE RANDS, RESIZE BUFFER, APPEND CHAR, HASH, COMPARE { EXIT }
@@ -341,13 +347,12 @@ __global__ void find_collisions(volatile char* collision) {
     do
     {
         // generate a new batch of random numbers as needed
-        if (random_index == NUM_8BIT_RANDS) {
+        if (random_index == NUM_RANDOMS) {
             random_index = 0;
-            for (int i = 0; i < NUM_32BIT_RANDS; ++i)
+            for (int i = 0; i < FUNCTION_CALLS_NEEDED; ++i)
             {
-                int id = threadIdx.x + blockIdx.x * blockDim.x;
                 curandStatePhilox4_32_10_t state;
-                curand_init(i, id, 0, &state);
+                curand_init(i, tid, 0, &state);
                 // effectively assigns 4 random uint8_t's per execution
                 *((uint32_t*)(randoms + i*4)) = curand(&state);
             }
@@ -475,7 +480,7 @@ void task1() {
     unsigned long long h_collision_sizes[TARGET_COLLISIONS];
     unsigned long long h_collision_attempts = 0;
     for (int i = 0; i < TARGET_COLLISIONS; ++i) {
-        h_collisions[i] = (char*)calloc(1, ARBITRARY_MAX_BUFF_SIZE);
+        h_collisions[i] = (char*)calloc(1, INITIAL_COLLISION_BUFF_SIZE);
         h_collision_sizes[i] = 0;
     }
     uint8_t h_collision_index = 0;
@@ -486,7 +491,7 @@ void task1() {
 
     // allocate global mem for collision - initialized in loop
     volatile char* d_collision;
-    gpuErrchk( cudaMalloc((void **)&d_collision, ARBITRARY_MAX_BUFF_SIZE) );
+    gpuErrchk( cudaMalloc((void **)&d_collision, INITIAL_COLLISION_BUFF_SIZE) );
 
     // parallelization setup - initialize device globals
     gpuErrchk( cudaMemcpyToSymbol(d_const_md5_digest, &md5_digest, sizeof(md5_digest), 0, cudaMemcpyHostToDevice) );
@@ -494,8 +499,7 @@ void task1() {
     gpuErrchk( cudaMemcpy((void*)d_collision, h_sampleFile_buff, h_sampleFile_buff_size, cudaMemcpyHostToDevice) );
 
     // execution configuration (sync device)
-    find_collisions <<<MULTIPROCESSORS-5, 1>>> (d_collision);
-    //find_collisions<<<MULTIPROCESSORS-5, CUDA_CORES_PER_MULTIPROCESSOR>>>(d_collision);
+    find_collisions <<<BLOCKS_PER_KERNEL, THREADS_PER_BLOCK>>> (d_collision);
 
     // run kernel
     while (h_collision_index < TARGET_COLLISIONS)
