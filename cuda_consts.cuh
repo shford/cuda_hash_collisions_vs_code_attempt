@@ -38,7 +38,7 @@
 // USER DEFINED CONSTANTS
 //===========================================================================================================
 #define TARGET_COLLISIONS (2)
-#define ARBITRARY_MAX_BUFF_SIZE (20000) // expected 4000, getting 10000... not sure why
+#define ARBITRARY_MAX_BUFF_SIZE (20000) // MUST BE MULTIPLE OF 8 expected 4000, getting 10000... not sure why
 #define NUM_8BIT_RANDS (48)
 #define NUM_32BIT_RANDS (NUM_8BIT_RANDS / 4)
 #define ENCODING_SIZE (256)

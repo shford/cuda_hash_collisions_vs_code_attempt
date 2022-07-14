@@ -317,7 +317,7 @@ __global__ void find_collisions(char* collision) {
         local_collision[byte_index] = collision[byte_index];
     }
 
-    // allocate room for new hash
+    // allocate room for new digest
     MD5_HASH_dev local_md5_digest;
 
     // allocate storage for random character
@@ -373,7 +373,7 @@ __global__ void find_collisions(char* collision) {
         // generate new hash
         Md5Calculate_dev((const void*)local_collision, local_collision_size, &local_md5_digest);
 
-        // terminate all threads if first 20 bits of digest match            
+        // terminate all threads if first 20 bits of digest match
         // MAY EXIT LOCK STEP - possible deadlock if mishandled
         if ((*((uint32_t*)&d_const_md5_digest) >> 12 == *((uint32_t*)&local_md5_digest) >> 12))
         {
@@ -401,10 +401,12 @@ __global__ void find_collisions(char* collision) {
 
             // free lock only once host signals finished reading (e.g. d_collision_flag = FALSE)
             do {} while (d_collision_flag);
-            d_global_mutex = UNLOCKED;
+            
+            // safely unlock mutex by writing to flag - remember relaxed ordering doesn't matter here
+            atomicExch(&d_global_mutex, UNLOCKED);
         }
         // increment hash attempts
-        ++d_collision_attempts;
+        atomicAdd(&d_collision_attempts, 1);
     } while(d_num_collisions_found < TARGET_COLLISIONS);
     //cudaFree(local_collision);
 }
@@ -468,16 +470,17 @@ void task1() {
     gpuErrchk( cudaMemcpyToSymbol(d_collision_size, &h_sampleFile_buff_size, sizeof(h_sampleFile_buff_size), 0, cudaMemcpyHostToDevice) );
     gpuErrchk( cudaMemcpy(d_collision, h_sampleFile_buff, h_sampleFile_buff_size, cudaMemcpyHostToDevice) );
 
+    // execution configuration (sync device)
+    find_collisions <<<MULTIPROCESSORS, 1>>> (d_collision);
+    //find_collisions<<<MULTIPROCESSORS-1, CUDA_CORES_PER_MULTIPROCESSOR>>>(d_collision);
+
     // run kernel
     while (h_collision_index < TARGET_COLLISIONS)
     {
-        // execution configuration (sync device)
-        find_collisions<<<MULTIPROCESSORS, 1>>>(d_collision);
-        //find_collisions<<<MULTIPROCESSORS-1, CUDA_CORES_PER_MULTIPROCESSOR>>>(d_collision);
-
         // poll collision flag
         while (!h_collision_flag)
         {
+            // NOTE: errors on this line are most likely from the kernel
             gpuErrchk(cudaMemcpyFromSymbol(&h_collision_flag, d_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyDeviceToHost));
         }
 
