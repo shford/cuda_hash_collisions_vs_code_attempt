@@ -288,14 +288,14 @@ __device__ void Md5Calculate_dev(void  const* Buffer, uint32_t BufferSize, MD5_H
 
 
 // statically initialized global variables
-__device__ uint8_t d_num_collisions_found = 0;          // track number of collisions found by active kernel
-__device__ unsigned long long d_collision_attempts = 0; // track total number of attempts per collision
-__device__ int d_global_mutex = UNLOCKED;               // signal mutex to other threads (globally)
-__device__ int d_collision_flag = FALSE;                // signal host to read
+__device__ uint8_t d_num_collisions_found = 0;              // track number of collisions found by active kernel
+__device__ unsigned long long d_collision_attempts = 0;     // track total number of attempts per collision
+__device__ int d_global_mutex = UNLOCKED;                   // signal mutex to other threads (globally)
+__device__ int d_collision_flag = FALSE;                    // signal host to read
 
 // dynamically initialized in host
 __constant__ __device__ MD5_HASH_dev d_const_md5_digest;    // store digest on L2 or L1 cache (on v8.6)
-__device__ unsigned long long d_collision_size;         // track # of characters in collision
+__device__ unsigned long long d_collision_size;             // track # of characters in collision
 
 __global__ void find_collisions(char* collision) {
     //===========================================================================================================
@@ -473,7 +473,7 @@ void task1() {
     while (h_collision_index < TARGET_COLLISIONS)
     {
         // execution configuration (sync device)
-        find_collisions<<<1, 1>>>(d_collision);
+        find_collisions<<<MULTIPROCESSORS, 1>>>(d_collision);
         //find_collisions<<<MULTIPROCESSORS-1, CUDA_CORES_PER_MULTIPROCESSOR>>>(d_collision);
 
         // poll collision flag
