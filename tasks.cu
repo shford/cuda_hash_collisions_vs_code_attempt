@@ -297,10 +297,20 @@ __device__ int d_collision_flag = FALSE;                    // signal host to re
 __constant__ __device__ MD5_HASH_dev d_const_md5_digest;    // store digest on L2 or L1 cache (on v8.6)
 __device__ unsigned long long d_collision_size;             // track # of characters in collision
 
-__global__ void find_collisions(char* collision) {
+__global__ void find_collisions(volatile char* collision) {
     //===========================================================================================================
     // DECLARATIONS & INITIALIZATION
     //===========================================================================================================
+
+    // create warp synchronization semaphore
+    __shared__ int sync_warp_flag;
+
+    // force each thread to get its "warp id"
+    __shared__ int warp_group[CUDA_CORES_PER_MULTIPROCESSOR];
+
+    for (int tid = 0; tid < CUDA_CORES_PER_MULTIPROCESSOR; ++tid) {
+        
+    }
 
     // allocate local buffer and keep track of size in case of resizing
     char local_collision[ARBITRARY_MAX_BUFF_SIZE];
@@ -373,37 +383,47 @@ __global__ void find_collisions(char* collision) {
         // generate new hash
         Md5Calculate_dev((const void*)local_collision, local_collision_size, &local_md5_digest);
 
-        // terminate all threads if first 20 bits of digest match
-        // MAY EXIT LOCK STEP - possible deadlock if mishandled
-        if ((*((uint32_t*)&d_const_md5_digest) >> 12 == *((uint32_t*)&local_md5_digest) >> 12))
+        // terminate all threads if first 20 bits of digest match (and prevent warp deadlock)
+        if ((*((uint32_t*)&d_const_md5_digest) >> 12 == *((uint32_t*)&local_md5_digest) >> 12) || sync_warp_flag == TRUE)
         {
-            /* todo:
-             *  unlikely but possible device wide deadlock if within the same warp
-             *  1 thread sets a mutex causing a divergent instruction path and the
-             *  scheduler interrupts said thread to schedule another which will then idle
-             *  forever, thus preventing the mutex thread from completing.
-             *  1) May want to utilize capability: " Run time limit on kernels:                     Yes"
-             *  2) May want to init 1 __shared var / block w/ thread id of whose turn is next
-             */
-            
-            // set mutex lock
-            do {} while (atomicCAS(&d_global_mutex, UNLOCKED, LOCKED));
-            
-            // enter critical section - writing for host polls and signalling when ready
-            for (int byte_index = 0; byte_index <= local_collision_size; ++byte_index) {
-                collision[byte_index] = local_collision[byte_index];
+            // setup warp sync before setting mutex b/c loops can cause deadlock
+            designatedThreadId = threadIdx.x;
+            sync_warp_flag = TRUE;
+            __syncwarp(); // causes the executing thread to wait until all threads specified in mask have executed a __syncwarp()
+
+            // ensure threads converge so that critical thread is not indefinetly suspended
+            while (sync_warp_flag)
+            {
+                // do mutex operations
+                if (threadIdx.x == designatedThreadId)
+                {
+                    // set mutex lock
+                    do {} while (atomicCAS(&d_global_mutex, UNLOCKED, LOCKED));
+
+                    // enter critical section - writing for host polls and signalling when ready
+                    for (int byte_index = 0; byte_index <= local_collision_size; ++byte_index) {
+                        collision[byte_index] = local_collision[byte_index];
+                    }
+                    d_collision_size = local_collision_size;
+                    ++d_num_collisions_found;
+
+                    // signal host to read
+                    d_collision_flag = TRUE;
+
+                    // free lock only once host signals finished reading (e.g. d_collision_flag = FALSE)
+                    do {} while (d_collision_flag);
+
+                    // safely unlock mutex by writing to flag - remember relaxed ordering doesn't matter here
+                    atomicExch(&d_global_mutex, UNLOCKED);
+
+                    // release non-critical warp threads and reset flag
+                    sync_warp_flag = FALSE;
+                }
+                else
+                {
+                    // have non-critical warp threads read check for 
+                }
             }
-            d_collision_size = local_collision_size;
-            ++d_num_collisions_found;
-
-            // signal host to read
-            d_collision_flag = TRUE;
-
-            // free lock only once host signals finished reading (e.g. d_collision_flag = FALSE)
-            do {} while (d_collision_flag);
-            
-            // safely unlock mutex by writing to flag - remember relaxed ordering doesn't matter here
-            atomicExch(&d_global_mutex, UNLOCKED);
         }
         // increment hash attempts
         atomicAdd(&d_collision_attempts, 1);
@@ -461,18 +481,21 @@ void task1() {
     uint8_t h_collision_index = 0;
     int h_collision_flag = FALSE;
 
+    // initialize device
+    cudaSetDevice(0);
+
     // allocate global mem for collision - initialized in loop
-    char* d_collision;
+    volatile char* d_collision;
     gpuErrchk( cudaMalloc((void **)&d_collision, ARBITRARY_MAX_BUFF_SIZE) );
 
     // parallelization setup - initialize device globals
     gpuErrchk( cudaMemcpyToSymbol(d_const_md5_digest, &md5_digest, sizeof(md5_digest), 0, cudaMemcpyHostToDevice) );
     gpuErrchk( cudaMemcpyToSymbol(d_collision_size, &h_sampleFile_buff_size, sizeof(h_sampleFile_buff_size), 0, cudaMemcpyHostToDevice) );
-    gpuErrchk( cudaMemcpy(d_collision, h_sampleFile_buff, h_sampleFile_buff_size, cudaMemcpyHostToDevice) );
+    gpuErrchk( cudaMemcpy((void*)d_collision, h_sampleFile_buff, h_sampleFile_buff_size, cudaMemcpyHostToDevice) );
 
     // execution configuration (sync device)
-    find_collisions <<<MULTIPROCESSORS, 1>>> (d_collision);
-    //find_collisions<<<MULTIPROCESSORS-1, CUDA_CORES_PER_MULTIPROCESSOR>>>(d_collision);
+    find_collisions <<<MULTIPROCESSORS-5, 1>>> (d_collision);
+    //find_collisions<<<MULTIPROCESSORS-5, CUDA_CORES_PER_MULTIPROCESSOR>>>(d_collision);
 
     // run kernel
     while (h_collision_index < TARGET_COLLISIONS)
@@ -486,7 +509,7 @@ void task1() {
 
         // read updated collision count, collision size, collision, and hash attempts
         gpuErrchk(cudaMemcpyFromSymbol(&h_collision_sizes[h_collision_index], d_collision_size, sizeof(h_sampleFile_buff_size), 0, cudaMemcpyDeviceToHost));
-        gpuErrchk(cudaMemcpy(h_collisions[h_collision_index], d_collision, h_collision_sizes[h_collision_index], cudaMemcpyDeviceToHost) );
+        gpuErrchk(cudaMemcpy(h_collisions[h_collision_index], (const void*)d_collision, h_collision_sizes[h_collision_index], cudaMemcpyDeviceToHost) );
 
         // reset flags to release mutex and reset kernel
         h_collision_flag = FALSE;
@@ -506,7 +529,7 @@ void task1() {
     gpuErrchk( cudaDeviceSynchronize() );
 
     // free collisions
-    cudaFree(d_collision);
+    cudaFree((void*)d_collision);
     free(h_sampleFile_buff);
 
     printf("\nCalculated %d collisions in %lld attempts... Success!/\n", TARGET_COLLISIONS, h_collision_attempts);
