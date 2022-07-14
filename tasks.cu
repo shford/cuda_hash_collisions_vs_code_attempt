@@ -303,7 +303,7 @@ __global__ void find_collisions(char* collision) {
     //===========================================================================================================
 
     // allocate local buffer and keep track of size in case of resizing
-    char local_collision[ARBITRARY_MAX_BUFF_SIZE*2];
+    char local_collision[ARBITRARY_MAX_BUFF_SIZE];
     //unsigned long long local_buff_size = ARBITRARY_MAX_BUFF_SIZE;
     //cudaError_t ret = cudaMalloc((void**)&local_collision, local_buff_size);
     //if (ret != cudaSuccess) {
@@ -386,22 +386,21 @@ __global__ void find_collisions(char* collision) {
              *  2) May want to init 1 __shared var / block w/ thread id of whose turn is next
              */
             
-            // set mutex lock -- see https://people.maths.ox.ac.uk/gilesm/cuda/lecs/lec3-2x2.pdf p21
+            // set mutex lock
             do {} while (atomicCAS(&d_global_mutex, UNLOCKED, LOCKED));
             
-            //enter critical section - writing for host polls and signalling when ready
+            // enter critical section - writing for host polls and signalling when ready
             for (int byte_index = 0; byte_index <= local_collision_size; ++byte_index) {
                 collision[byte_index] = local_collision[byte_index];
             }
             d_collision_size = local_collision_size;
             ++d_num_collisions_found;
 
+            // signal host to read
             d_collision_flag = TRUE;
 
-            // wait for writes to finished - DO NOT REMOVE
-            __threadfence();
-
-            // free lock
+            // free lock only once host signals finished reading (e.g. d_collision_flag = FALSE)
+            do {} while (d_collision_flag);
             d_global_mutex = UNLOCKED;
         }
         // increment hash attempts
@@ -423,7 +422,7 @@ void task1() {
     // read file data
     char sampleFile_path[] = "C:/Users/shford/CLionProjects/cuda_hashing/sample.txt";
     char* h_sampleFile_buff;
-    uint32_t h_sampleFile_buff_size = 0; // handle files up to ~4GiB (2^32-1 bytes)
+    uint32_t h_sampleFile_buff_size = 0; // handle files up to ~4GiB (2^32-1 bytes) -- may be 1 byte too small
     get_file_data((char*)sampleFile_path, &h_sampleFile_buff, &h_sampleFile_buff_size);
 
     // get hash md5_digest
@@ -488,7 +487,7 @@ void task1() {
 
         // reset flags to release mutex and reset kernel
         h_collision_flag = FALSE;
-        cudaMemcpyToSymbol(d_global_mutex, &h_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyHostToDevice);
+        //cudaMemcpyToSymbol(d_global_mutex, &h_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyHostToDevice);
         cudaMemcpyToSymbol(d_collision_flag, &h_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyHostToDevice);
 
         // increment collision index
