@@ -34,9 +34,12 @@
 
 int main()
 {
-    printf("Hash Collider - Starting Task 1...");
-
-    task1();
-
-    return 0;
+    #if VALID_USER_INPUTS
+        printf("Hash Collider - Starting Task 1...");
+        task1();
+        return 0;
+    #else
+        printf("Invalid user input macro evaluation... Please ensure CUDA Version, DeviceQuery Information, and User Variables are correct.\n");
+        return -1;
+    #endif // VALID_USER_INPUTS
 }
