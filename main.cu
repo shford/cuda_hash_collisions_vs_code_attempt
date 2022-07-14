@@ -35,6 +35,7 @@
 int main()
 {
     printf("Hash Collider - Starting Task 1...");
+
     task1();
 
     return 0;
