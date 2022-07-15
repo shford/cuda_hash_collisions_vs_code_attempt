@@ -152,8 +152,8 @@
     #define RAND_TYPE uint32_t
 #endif
 
-#define RAND_BIT_MULTIPLE (RANDOM_GENERATOR_RETURN_LENGTH / (NUM_ENCODING_BITS)
-#define FUNCTION_CALLS_NEEDED (NUM_RANDOMS / (RANDOM_GENERATOR_RETURN_LENGTH / (NUM_ENCODING_BITS))
+#define RAND_BIT_MULTIPLE (RANDOM_GENERATOR_RETURN_LENGTH / NUM_ENCODING_BITS)
+#define FUNCTION_CALLS_NEEDED (NUM_RANDOMS / RAND_BIT_MULTIPLE)
 
 //===========================================================================================================
 // USER INPUT SANITY CHECKS - DO NOT CHANGE (type literals correspond to program or hardware limitations)
