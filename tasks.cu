@@ -449,8 +449,8 @@ void task1() {
     // read file data
     char sampleFile_path[] = "C:/Users/shford/CLionProjects/cuda_hashing/sample.txt";
     char* h_sampleFile_buff;
-    uint32_t h_sampleFile_buff_size = 0; // handle files up to ~4GiB (2^32-1 bytes) -- may be 1 byte too small
-    get_file_data((char*)sampleFile_path, &h_sampleFile_buff, &h_sampleFile_buff_size);
+    unsigned long long h_sampleFile_buff_size = 0; // handle files up to ~4GiB (2^32-1 bytes) -- may be 1 byte too small
+    get_file_data((char*)sampleFile_path, &h_sampleFile_buff, (uint32_t*)&h_sampleFile_buff_size);
 
     // get hash md5_digest
     MD5_HASH md5_digest;
@@ -476,6 +476,7 @@ void task1() {
     //===========================================================================================================
 
     // allocate storage for collisions once found
+    uint8_t h_collision_index = 0;
     char* h_collisions[TARGET_COLLISIONS];
     unsigned long long h_collision_sizes[TARGET_COLLISIONS];
     unsigned long long h_collision_attempts = 0;
@@ -483,7 +484,6 @@ void task1() {
         h_collisions[i] = (char*)calloc(1, INITIAL_COLLISION_BUFF_SIZE);
         h_collision_sizes[i] = 0;
     }
-    uint8_t h_collision_index = 0;
     int h_collision_flag = FALSE;
 
     // initialize device
@@ -492,6 +492,7 @@ void task1() {
     // allocate global mem for collision - initialized in loop
     volatile char* d_collision;
     gpuErrchk( cudaMalloc((void **)&d_collision, INITIAL_COLLISION_BUFF_SIZE) );
+    gpuErrchk( cudaMemset(d_collision, 0x00, INITIAL_COLLISION_BUFF_SIZE));
 
     // parallelization setup - initialize device globals
     gpuErrchk( cudaMemcpyToSymbol(d_const_md5_digest, &md5_digest, sizeof(md5_digest), 0, cudaMemcpyHostToDevice) );
@@ -499,7 +500,7 @@ void task1() {
     gpuErrchk( cudaMemcpy((void*)d_collision, h_sampleFile_buff, h_sampleFile_buff_size, cudaMemcpyHostToDevice) );
 
     // execution configuration (sync device)
-    find_collisions <<<BLOCKS_PER_KERNEL, THREADS_PER_BLOCK>>> (d_collision);
+    find_collisions<<<BLOCKS_PER_KERNEL, THREADS_PER_BLOCK>>>(d_collision);
 
     // run kernel
     while (h_collision_index < TARGET_COLLISIONS)
@@ -508,28 +509,29 @@ void task1() {
         while (!h_collision_flag)
         {
             // NOTE: errors on this line are most likely from the kernel
-            gpuErrchk(cudaMemcpyFromSymbol(&h_collision_flag, d_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyDeviceToHost));
+            gpuErrchk( cudaMemcpyFromSymbol(&h_collision_flag, d_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyDeviceToHost));
         }
 
-        // read updated collision count, collision size, collision, and hash attempts
-        gpuErrchk(cudaMemcpyFromSymbol(&h_collision_sizes[h_collision_index], d_collision_size, sizeof(h_sampleFile_buff_size), 0, cudaMemcpyDeviceToHost));
-        gpuErrchk(cudaMemcpy(h_collisions[h_collision_index], (const void*)d_collision, h_collision_sizes[h_collision_index], cudaMemcpyDeviceToHost) );
+        // read updated collision size, collision
+        gpuErrchk( cudaMemcpyFromSymbol(&h_collision_sizes[h_collision_index], d_collision_size, sizeof(h_collision_sizes[h_collision_index]), 0, cudaMemcpyDeviceToHost));
+        gpuErrchk( cudaMemcpy(&h_collisions[h_collision_index], (const void*)d_collision, h_collision_sizes[h_collision_index], cudaMemcpyDeviceToHost) );
 
-        // reset flags to release mutex and reset kernel
-        h_collision_flag = FALSE;
-        //cudaMemcpyToSymbol(d_global_mutex, &h_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyHostToDevice);
-        cudaMemcpyToSymbol(d_collision_flag, &h_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyHostToDevice);
-
-        // increment collision index
+        // increment collision index for host and device
         ++h_collision_index;
-        
-        // on final loop read the number of cumulative attempts
-        if (h_collision_index == TARGET_COLLISIONS)
-        {
-            gpuErrchk(cudaMemcpyFromSymbol(&h_collision_attempts, d_collision_attempts,
-                sizeof(h_collision_attempts), 0, cudaMemcpyDeviceToHost));
-        }
+        gpuErrchk( cudaMemcpyToSymbol(d_num_collisions_found, &h_collision_index, sizeof(h_collision_index), 0, cudaMemcpyHostToDevice));
+
+        // reset flags to release device-wide mutex and reset kernel
+        h_collision_flag = FALSE;
+        cudaMemcpyToSymbol(d_collision_flag, &h_collision_flag, sizeof(h_collision_flag), 0, cudaMemcpyHostToDevice);
     }
+    
+    // read the final number of cumulative hashing attempts
+    if (h_collision_index == TARGET_COLLISIONS)
+    {
+        gpuErrchk(cudaMemcpyFromSymbol(&h_collision_attempts, d_collision_attempts,
+            sizeof(h_collision_attempts), 0, cudaMemcpyDeviceToHost));
+    }
+
     gpuErrchk( cudaDeviceSynchronize() );
 
     // free collisions
