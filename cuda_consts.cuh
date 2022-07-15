@@ -145,13 +145,14 @@
 #define THREADS_PER_KERNEL (BLOCKS_PER_KERNEL * THREADS_PER_BLOCK)
 
 #if (NUM_ENCODING_BITS == 8)
-    #define RAND_TYPE (uint8_t)
+    #define RAND_TYPE uint8_t
 #elif (NUM_ENCODING_BITS == 16)
-    #define RAND_TYPE (uint16_t)
+    #define RAND_TYPE uint16_t
 #elif (NUM_ENCODING_BITS == 32)
-    #define RAND_TYPE (uint32_t)
+    #define RAND_TYPE uint32_t
 #endif
 
+#define RAND_BIT_MULTIPLE (RANDOM_GENERATOR_RETURN_LENGTH / (NUM_ENCODING_BITS)
 #define FUNCTION_CALLS_NEEDED (NUM_RANDOMS / (RANDOM_GENERATOR_RETURN_LENGTH / (NUM_ENCODING_BITS))
 
 //===========================================================================================================
