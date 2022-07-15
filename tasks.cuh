@@ -11,7 +11,6 @@
 #include <cuda_device_runtime_api.h>
 #include <cuda_runtime_api.h>
 #include <curand_kernel.h>
-//#include <curand_philox4x32_x.h>
 #include "cuda_consts.cuh"
 #include "subroutines.cuh"
 #include "WjCryptLib_Md5_host.cuh"
