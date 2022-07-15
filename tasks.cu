@@ -290,8 +290,10 @@ __device__ void Md5Calculate_dev(void  const* Buffer, uint32_t BufferSize, MD5_H
 // statically initialized global variables
 __device__ uint8_t d_num_collisions_found = 0;              // track number of collisions found by active kernel
 __device__ unsigned long long d_collision_attempts = 0;     // track approximate cumulative number of attempts
-__device__ int d_global_mutex = UNLOCKED;                   // signal mutex to other threads (globally)
 __device__ int d_collision_flag = FALSE;                    // signal host to read
+__device__ int global_mutex = UNLOCKED;                     // signal mutex to other threads (globally)
+__device__ unsigned long long random_seeder = 0;            // increment before each rand call to avoid repeat deterministic "randoms"
+
 
 // dynamically initialized in host
 __constant__ __device__ MD5_HASH_dev d_const_md5_digest;    // store digest on L2 or L1 cache (on v8.6)
@@ -334,7 +336,8 @@ __global__ void find_collisions(volatile char* collision) {
             for (int i = 0; i < FUNCTION_CALLS_NEEDED; ++i)
             {
                 curandStatePhilox4_32_10_t state;
-                curand_init(i, tid, 0, &state);
+                ++random_seeder;
+                curand_init(i, random_seeder, 0, &state);
                 // effectively assigns 4 random uint8_t's per execution
                 *((uint32_t*)(randoms + i*RAND_BIT_MULTIPLE)) = curand(&state);
             }
@@ -388,7 +391,7 @@ __global__ void find_collisions(volatile char* collision) {
                 if ((threadIdx.x & 0x1f) == lane_id_of_found_collision)
                 {
                     // set mutex lock
-                    do {} while (atomicCAS(&d_global_mutex, UNLOCKED, LOCKED));
+                    do {} while (atomicCAS(&global_mutex, UNLOCKED, LOCKED));
 
                     // enter critical section - writing for host polls and signalling when ready
                     for (int byte_index = 0; byte_index <= local_collision_size; ++byte_index) {
@@ -407,7 +410,7 @@ __global__ void find_collisions(volatile char* collision) {
                     } while (d_collision_flag);
 
                     // safely unlock mutex by writing to flag - remember relaxed ordering doesn't matter here
-                    atomicExch(&d_global_mutex, UNLOCKED);
+                    atomicExch(&global_mutex, UNLOCKED);
 
                     // release non-critical warp threads and reset flag
                     sync_warp_flag = FALSE;
@@ -481,7 +484,7 @@ void task1() {
     // allocate global mem for collision - initialized in loop
     volatile char* d_collision;
     gpuErrchk( cudaMalloc((void **)&d_collision, INITIAL_COLLISION_BUFF_SIZE) );
-    gpuErrchk( cudaMemset(d_collision, 0x00, INITIAL_COLLISION_BUFF_SIZE));
+    gpuErrchk( cudaMemset((void*)d_collision, 0x00, INITIAL_COLLISION_BUFF_SIZE));
 
     // parallelization setup - initialize device globals
     gpuErrchk( cudaMemcpyToSymbol(d_const_md5_digest, &md5_digest, sizeof(md5_digest), 0, cudaMemcpyHostToDevice) );
