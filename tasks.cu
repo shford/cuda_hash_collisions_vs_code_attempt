@@ -289,7 +289,7 @@ __device__ void Md5Calculate_dev(void  const* Buffer, uint32_t BufferSize, MD5_H
 
 // statically initialized global variables
 __device__ uint8_t d_num_collisions_found = 0;              // track number of collisions found by active kernel
-__device__ unsigned long long d_collision_attempts = 0;     // track total number of attempts per collision
+__device__ unsigned long long d_collision_attempts = 0;     // track approximate cumulative number of attempts
 __device__ int d_global_mutex = UNLOCKED;                   // signal mutex to other threads (globally)
 __device__ int d_collision_flag = FALSE;                    // signal host to read
 
@@ -302,30 +302,12 @@ __global__ void find_collisions(volatile char* collision) {
     // DECLARATIONS & INITIALIZATION todo finish warp
     //===========================================================================================================
 
-    // get thread id
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-
     // create warp synchronization semaphore
-    __shared__ int sync_warp_flag;
-    __shared__ int designatedThreadId;
+    int sync_warp_flag;
+    int lane_id_of_found_collision;
 
-    // assign each thread thread a "warp group id"
-    __shared__ int warp_group[CUDA_CORES_PER_MULTIPROCESSOR];
-    for (int warp_gid = 1; warp_gid <= CUDA_CORES_PER_MULTIPROCESSOR / WARP_SIZE; ++warp_gid) {
-        if (tid < warp_gid*WARP_SIZE) {
-            warp_group[tid] = warp_gid;
-            break;
-        }
-    }
-
-    // allocate local buffer and keep track of size in case of resizing
-    char local_collision[INITIAL_COLLISION_BUFF_SIZE];
-    //unsigned long long local_buff_size = ARBITRARY_MAX_BUFF_SIZE;
-    //cudaError_t ret = cudaMalloc((void**)&local_collision, local_buff_size);
-    //if (ret != cudaSuccess) {
-    //  printf("Err: %d. Local buffer allocation failed.\n", (int)ret);
-    //}
-    
+    // allocate local buffer
+    char local_collision[INITIAL_COLLISION_BUFF_SIZE];    
 
     // initialize local buffer
     unsigned long long local_collision_size = d_collision_size;
@@ -354,7 +336,7 @@ __global__ void find_collisions(volatile char* collision) {
                 curandStatePhilox4_32_10_t state;
                 curand_init(i, tid, 0, &state);
                 // effectively assigns 4 random uint8_t's per execution
-                *((uint32_t*)(randoms + i*4)) = curand(&state);
+                *((uint32_t*)(randoms + i*RAND_BIT_MULTIPLE)) = curand(&state);
             }
         }
 
@@ -391,16 +373,19 @@ __global__ void find_collisions(volatile char* collision) {
         // terminate all threads if first 20 bits of digest match (and prevent warp deadlock)
         if ((*((uint32_t*)&d_const_md5_digest) >> 12 == *((uint32_t*)&local_md5_digest) >> 12) || sync_warp_flag == TRUE)
         {
-            // setup warp sync before setting mutex b/c loops can cause deadlock
-            designatedThreadId = threadIdx.x;
+            // synchronize all threads in warp, and get "value" from lane 0
+            lane_id_of_found_collision = threadIdx.x & (WARP_SIZE - 1);
+            __shfl_sync(0xffffffff, lane_id_of_found_collision, lane_id_of_found_collision);
+            
+            // synchronize all threads in warp, and get "value" from lane 0
             sync_warp_flag = TRUE;
-            __syncwarp(); // causes the executing thread to wait until all threads specified in mask have executed a __syncwarp()
+            __shfl_sync(0xffffffff, sync_warp_flag, lane_id_of_found_collision);
 
-            // ensure threads converge so that critical thread is not indefinetly suspended
+            // threads will converge so that critical thread is not indefinetly suspended
             while (sync_warp_flag)
             {
                 // do mutex operations
-                if (threadIdx.x == designatedThreadId)
+                if ((threadIdx.x & 0x1f) == lane_id_of_found_collision)
                 {
                     // set mutex lock
                     do {} while (atomicCAS(&d_global_mutex, UNLOCKED, LOCKED));
@@ -410,30 +395,34 @@ __global__ void find_collisions(volatile char* collision) {
                         collision[byte_index] = local_collision[byte_index];
                     }
                     d_collision_size = local_collision_size;
-                    ++d_num_collisions_found;
 
                     // signal host to read
                     d_collision_flag = TRUE;
 
                     // free lock only once host signals finished reading (e.g. d_collision_flag = FALSE)
-                    do {} while (d_collision_flag);
+                    do {
+                        // thread idles while host updates 
+                        // 1) d_num_collisions_found
+                        // 2) d_collision_flag
+                    } while (d_collision_flag);
 
                     // safely unlock mutex by writing to flag - remember relaxed ordering doesn't matter here
                     atomicExch(&d_global_mutex, UNLOCKED);
 
                     // release non-critical warp threads and reset flag
                     sync_warp_flag = FALSE;
+                    __shfl_sync(0xffffffff, sync_warp_flag, lane_id_of_found_collision);
                 }
                 else
                 {
                     // have non-critical warp threads read check for 
                 }
+                __syncwarp(); // causes the executing thread to wait until all threads specified in mask have executed a __syncwarp()
             }
         }
         // increment hash attempts
-        atomicAdd(&d_collision_attempts, 1);
+        ++d_collision_attempts;
     } while(d_num_collisions_found < TARGET_COLLISIONS);
-    //cudaFree(local_collision);
 }
 
 void task1() {
